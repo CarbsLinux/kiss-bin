@@ -1,0 +1,43 @@
+#!/bin/sh -ef
+# Output a manifest for a binary repository
+case "$1" in --help|-h) printf '%s\n' "usage: ${0##*/} [file]..." >&2 ; exit 0 ; esac
+
+sh256() {
+    # We will not be sourcing kiss just for this
+    # function that we'll use. So we are defining
+    # something similar here.
+    hash=$(sha256sum "$1" ||
+          sha256 -r "$1" ||
+          openssl dgst -sha256 -r "$1" ||
+          shasum -a 256 "$1" ||
+          digest -a sha256 "$1") 2>/dev/null
+}
+
+# If no arguments are given, output every file on
+# the current directory.
+[ "$1" ] || { set +f; set -f -- ./*.*-*.tar* ;}
+
+# We intentionally do no sorting here. If there are
+# only single versions for every package, it is quite
+# unnecessary. If you are doing an incremental update
+# to a manifest, it will be useless as you would be
+# re-sorting it after you are finished.
+#
+# You could do 'sort -rV' to the manifest, but it is
+# not POSIX. You could also do
+#
+#     sort -rnt. -k1,1 -k2,2 -k3,3
+#
+# which doesn't output a 'nice' looking manifest, and
+# is a little error-prone, but it will work with POSIX
+# implementations. Regardless, I will be suggesting the
+# former if you are using busybox or coreutils.
+for file; do
+    file=${file##*/}
+    [ -f "$file" ] || {
+        printf '%s\n' "$file must be on the current working directory" >&2
+        exit 1
+    }
+    sh256 "$file"
+    printf '%s %s %s\n' "${file%%.*}" "$file" "${hash%% *}"
+done

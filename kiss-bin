@@ -1,0 +1,188 @@
+#!/bin/sh -ef
+# Install binary packages from a distributed repository
+# shellcheck source=/dev/null
+
+# Load KISS as a library, this way we can use internal
+# functions variables without complicating the main source
+# code. I made sure that I do not use anything specific to
+# my own fork of KISS.
+#
+# We remove the last line calling the 'main "$@"' function.
+# We are going to do it ourselves after we define functions.
+sed '$d' "$(command -v kiss)" > .kisslib
+. ./.kisslib
+rm -f .kisslib
+
+pkg_sync() {
+    # Word splitting is intentional here.
+    # shellcheck disable=2086
+    { IFS=,; set -- $KISS_BIN; unset IFS; }
+
+    for repo do
+        log "Syncing ${repo##*:}"
+        curl "${repo%:*}/manifest" -fLo "$repo_dir/${repo##*:}"
+    done
+}
+
+pkg_download() {
+    # Extract the basename and the package name
+    # from the source. We then get the path we
+    # will be downloading to.
+    pkg=${1##*/} pkgname=${pkg%%.*}
+    pkgfile="${2:-$PWD}/${pkgname}#${pkg#*.}"
+
+    # If we have the package downloaded on the
+    # cache directory, we can skip the download
+    [ -f "$pkgfile" ] && {
+        log "$pkgname" "Found binary package '${pkgfile##*/}'"
+        return 0
+    }
+
+    log "$pkgname" "Downloading from $src"
+    curl "$src" -fLo "$pkgfile"
+}
+
+pkg_find() {
+    query=$1 match=$2 IFS=,; set --
+
+    for path in $KISS_BIN; do
+        url=${path%:*}
+        path=$repo_dir/${path##*:}
+        set +f
+        unset IFS
+
+        while read -r pkg file sha; do
+            # We want globbing here, it is safe and intentional.
+            # shellcheck disable=2254
+            case "$pkg" in $query) set -f -- "$@" "${path##*/}:$pkg:$sha:$url/$file"; esac
+        done < "$path"
+    done
+
+    [ "$1" ] || die "Package '$query' not in any repository"
+
+    [ "$match" ] && printf '%s\n' "$@" || printf '%s\n' "$1"
+}
+
+
+pkg_install() {
+    # Prompt the user if there are multiple packages or there
+    # is an update.
+    [ "$update" ] || [ $# -gt 1 ] &&
+        prompt "Download and install packages? [$*]"
+
+    for pkg; do
+        IFS=: read -r _ _ hash url <<-EOF
+        $(pkg_find "$pkg")
+EOF
+        # 'bin_dir' is specified in kiss, so we can ignore this.
+        # shellcheck disable=2154
+        pkg_download "$url" "$bin_dir"
+
+        # We use the sh256 function from KISS to validate
+        # the checksums
+        log "$pkg" "Verifying digest"
+        [ "$hash  $pkgfile" = "$(sh256 "$pkgfile")" ] ||
+            die "$pkg" "Checksum mismatch"
+
+        files="$pkgfile $files"
+    done
+
+    # Word splitting is intentional.
+    # shellcheck disable=2086
+    kiss i $files
+}
+
+pkg_updates() {
+    # This handles binary packages similar to the pkg_updates
+    # function on kiss
+    pkg_sync
+
+    log "Checking for new package versions"
+
+    set +f
+
+    # shellcheck disable=2154
+    for pkg in "$sys_db/"*; do
+        pkg_name=${pkg##*/}
+
+        # Read version and release information from the installed
+        # packages and from the manifest files.
+        read -r db_ver db_rel < "$pkg/version"
+
+        # Read the output of pkg_find and strip unneeded components
+        man_ver="$(pkg_find "$pkg_name")"
+        man_ver=${man_ver##*/} man_ver=${man_ver#*.} man_ver=${man_ver%%.tar*}
+
+        [ "$db_ver-$db_rel" = "$man_ver" ] || {
+            printf '%s\n' "$pkg_name $db_ver-$db_rel ==> $man_ver"
+            outdated="$outdated$pkg_name "
+        }
+    done
+
+    set -f
+
+    [ "$outdated" ] || {
+        log "Everything is up to date"
+        return
+    }
+
+    update=1
+    # Word splitting is intentional.
+    # shellcheck disable=2086
+    pkg_install $outdated
+    
+    log "Updated all packages"
+}
+
+args() {
+    action=$1
+    [ "$action" ] && shift
+
+    # These actions require an argument
+    case "$action" in g|get|i|install|s|search)
+        [ "$1" ] || die "'kiss-bin $action' requires an argument"
+    esac
+
+    case "$action" in i|install|s|search|f|fetch|u|update)
+        # Search for the KISS_BIN environment value and exit if
+        # it cannot be found.
+        [ "$KISS_BIN" ] || die "\$KISS_BIN needs to be set."
+
+        # Let's create the cache directory for binary repositories.
+        mkdir -p "${repo_dir:=$cac_dir/bin-repos}"
+        ;;
+    esac
+
+    case "$action" in
+        f|fetch)  pkg_sync ;;
+        i|install) pkg_install "$@" ;;
+        s|search) pkg_find "$1" all ;;
+        u|updates) pkg_updates ;;
+        g|get)
+            for src do
+                # 'bin_dir' is specified in kiss, so this
+                # can be safely ignored.
+                # shellcheck disable=2154
+                pkg_download "$src" "$bin_dir"
+                files="$pkgfile $files"
+            done
+
+            # We want word-splitting here.
+            # shellcheck disable=2086
+            kiss i $files
+            ;;
+        ''|--help|-h|help|h)
+            log "kiss-bin  [g|i|s|u] [pkg]..."
+            log 'fetch     Sync repository manifests'
+            log 'get       Install a package from a url'
+            log 'install   Install a package'
+            log 'search    Search for a package'
+            log 'update    Update binary packages'
+            ;;
+        *)
+            die "Unknown action '$action'"
+    esac
+}
+
+# Run the main function of KISS
+main "$@"
