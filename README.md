@@ -10,6 +10,8 @@ complicate the package manager.
 There are some caveats that I hope to fix as I work more on this
 extension
 
+See <https://dl.carbslinux.org/pkg> for an example binary repository.
+
 
 Quick Start
 -----------
