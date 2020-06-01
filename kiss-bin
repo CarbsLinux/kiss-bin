@@ -9,9 +9,7 @@
 #
 # We remove the last line calling the 'main "$@"' function.
 # We are going to do it ourselves after we define functions.
-sed '$d' "$(command -v kiss)" > .kisslib
-. ./.kisslib
-rm -f .kisslib
+eval "$(sed '$d' "$(command -v kiss)")"
 
 pkg_sync() {
     # Word splitting is intentional here.
